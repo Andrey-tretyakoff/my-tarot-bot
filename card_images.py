@@ -1,0 +1,61 @@
+CARD_IMAGES = {
+    # Старшие Арканы
+    "Шут": "https://upload.wikimedia.org/wikipedia/commons/9/90/RWS_Tarot_00_Fool.jpg",
+    "Маг": "https://upload.wikimedia.org/wikipedia/commons/d/de/RWS_Tarot_01_Magician.jpg",
+    "Верховная Жрица": "https://upload.wikimedia.org/wikipedia/commons/8/88/RWS_Tarot_02_High_Priestess.jpg",
+    "Императрица": "https://upload.wikimedia.org/wikipedia/commons/d/d2/RWS_Tarot_03_Empress.jpg",
+    "Император": "https://upload.wikimedia.org/wikipedia/commons/c/c3/RWS_Tarot_04_Emperor.jpg",
+    "Иерофант": "https://upload.wikimedia.org/wikipedia/commons/8/8d/RWS_Tarot_05_Hierophant.jpg",
+    "Влюблённые": "https://upload.wikimedia.org/wikipedia/commons/3/3a/TheLovers.jpg",
+    "Колесница": "https://upload.wikimedia.org/wikipedia/commons/9/9b/RWS_Tarot_07_Chariot.jpg",
+    "Сила": "https://upload.wikimedia.org/wikipedia/commons/f/f5/RWS_Tarot_08_Strength.jpg",
+    "Отшельник": "https://upload.wikimedia.org/wikipedia/commons/4/4d/RWS_Tarot_09_Hermit.jpg",
+    "Колесо Фортуны": "https://upload.wikimedia.org/wikipedia/commons/3/3c/RWS_Tarot_10_Wheel_of_Fortune.jpg",
+    "Справедливость": "https://upload.wikimedia.org/wikipedia/commons/e/e0/RWS_Tarot_11_Justice.jpg",
+    "Повешенный": "https://upload.wikimedia.org/wikipedia/commons/2/27/RWS_Tarot_12_Hanged_Man.jpg",
+    "Смерть": "https://upload.wikimedia.org/wikipedia/commons/d/d7/RWS_Tarot_13_Death.jpg",
+    "Умеренность": "https://upload.wikimedia.org/wikipedia/commons/f/f8/RWS_Tarot_14_Temperance.jpg",
+    "Дьявол": "https://upload.wikimedia.org/wikipedia/commons/5/55/RWS_Tarot_15_Devil.jpg",
+    "Башня": "https://upload.wikimedia.org/wikipedia/commons/5/53/RWS_Tarot_16_Tower.jpg",
+    "Звезда": "https://upload.wikimedia.org/wikipedia/commons/d/db/RWS_Tarot_17_Star.jpg",
+    "Луна": "https://upload.wikimedia.org/wikipedia/commons/7/7f/RWS_Tarot_18_Moon.jpg",
+    "Солнце": "https://upload.wikimedia.org/wikipedia/commons/1/17/RWS_Tarot_19_Sun.jpg",
+    "Суд": "https://upload.wikimedia.org/wikipedia/commons/d/dd/RWS_Tarot_20_Judgement.jpg",
+    "Мир": "https://upload.wikimedia.org/wikipedia/commons/f/ff/RWS_Tarot_21_World.jpg",
+
+    # Жезлы
+    "Туз Жезлы": "https://upload.wikimedia.org/wikipedia/commons/1/19/Wands01.jpg", "2 Жезлы": "https://upload.wikimedia.org/wikipedia/commons/5/52/Wands02.jpg",
+    "3 Жезлы": "https://upload.wikimedia.org/wikipedia/commons/d/d7/Wands03.jpg", "4 Жезлы": "https://upload.wikimedia.org/wikipedia/commons/4/47/Wands04.jpg",
+    "5 Жезлы": "https://upload.wikimedia.org/wikipedia/commons/3/3e/Wands05.jpg", "6 Жезлы": "https://upload.wikimedia.org/wikipedia/commons/9/90/Wands06.jpg",
+    "7 Жезлы": "https://upload.wikimedia.org/wikipedia/commons/4/47/Wands07.jpg", "8 Жезлы": "https://upload.wikimedia.org/wikipedia/commons/6/68/Wands08.jpg",
+    "9 Жезлы": "https://upload.wikimedia.org/wikipedia/commons/2/28/Wands09.jpg", "10 Жезлы": "https://upload.wikimedia.org/wikipedia/commons/1/19/Wands10.jpg",
+    "Паж Жезлы": "https://upload.wikimedia.org/wikipedia/commons/5/5f/WandsPage.jpg", "Рыцарь Жезлы": "https://upload.wikimedia.org/wikipedia/commons/d/dc/WandsKnight.jpg",
+    "Королева Жезлы": "https://upload.wikimedia.org/wikipedia/commons/9/91/WandsQueen.jpg", "Король Жезлы": "https://upload.wikimedia.org/wikipedia/commons/c/c3/WandsKing.jpg",
+
+    # Кубки
+    "Туз Кубки": "https://upload.wikimedia.org/wikipedia/commons/9/9b/Cups01.jpg", "2 Кубки": "https://upload.wikimedia.org/wikipedia/commons/b/b9/Cups02.jpg",
+    "3 Кубки": "https://upload.wikimedia.org/wikipedia/commons/7/7d/Cups03.jpg", "4 Кубки": "https://upload.wikimedia.org/wikipedia/commons/3/35/Cups04.jpg",
+    "5 Кубки": "https://upload.wikimedia.org/wikipedia/commons/d/d6/Cups05.jpg", "6 Кубки": "https://upload.wikimedia.org/wikipedia/commons/d/d6/Cups06.jpg",
+    "7 Кубки": "https://upload.wikimedia.org/wikipedia/commons/6/66/Cups07.jpg", "8 Кубки": "https://upload.wikimedia.org/wikipedia/commons/2/22/Cups08.jpg",
+    "9 Кубки": "https://upload.wikimedia.org/wikipedia/commons/2/27/Cups09.jpg", "10 Кубки": "https://upload.wikimedia.org/wikipedia/commons/a/a2/Cups10.jpg",
+    "Паж Кубки": "https://upload.wikimedia.org/wikipedia/commons/9/9b/CupsPage.jpg", "Рыцарь Кубки": "https://upload.wikimedia.org/wikipedia/commons/b/b1/CupsKnight.jpg",
+    "Королева Кубки": "https://upload.wikimedia.org/wikipedia/commons/3/35/CupsQueen.jpg", "Король Кубки": "https://upload.wikimedia.org/wikipedia/commons/9/91/CupsKing.jpg",
+
+    # Мечи
+    "Туз Мечи": "https://upload.wikimedia.org/wikipedia/commons/1/13/Swords01.jpg", "2 Мечи": "https://upload.wikimedia.org/wikipedia/commons/2/27/Swords02.jpg",
+    "3 Мечи": "https://upload.wikimedia.org/wikipedia/commons/3/33/Swords03.jpg", "4 Мечи": "https://upload.wikimedia.org/wikipedia/commons/4/44/Swords04.jpg",
+    "5 Мечи": "https://upload.wikimedia.org/wikipedia/commons/5/55/Swords05.jpg", "6 Мечи": "https://upload.wikimedia.org/wikipedia/commons/6/66/Swords06.jpg",
+    "7 Мечи": "https://upload.wikimedia.org/wikipedia/commons/7/77/Swords07.jpg", "8 Мечи": "https://upload.wikimedia.org/wikipedia/commons/8/88/Swords08.jpg",
+    "9 Мечи": "https://upload.wikimedia.org/wikipedia/commons/9/99/Swords09.jpg", "10 Мечи": "https://upload.wikimedia.org/wikipedia/commons/a/aa/Swords10.jpg",
+    "Паж Мечи": "https://upload.wikimedia.org/wikipedia/commons/b/bb/SwordsPage.jpg", "Рыцарь Мечи": "https://upload.wikimedia.org/wikipedia/commons/c/cc/SwordsKnight.jpg",
+    "Королева Мечи": "https://upload.wikimedia.org/wikipedia/commons/d/dd/SwordsQueen.jpg", "Король Мечи": "https://upload.wikimedia.org/wikipedia/commons/e/ee/SwordsKing.jpg",
+
+    # Пентакли
+    "Туз Пентакли": "https://upload.wikimedia.org/wikipedia/commons/1/11/Pents01.jpg", "2 Пентакли": "https://upload.wikimedia.org/wikipedia/commons/2/22/Pents02.jpg",
+    "3 Пентакли": "https://upload.wikimedia.org/wikipedia/commons/3/33/Pents03.jpg", "4 Пентакли": "https://upload.wikimedia.org/wikipedia/commons/4/44/Pents04.jpg",
+    "5 Пентакли": "https://upload.wikimedia.org/wikipedia/commons/5/55/Pents05.jpg", "6 Пентакли": "https://upload.wikimedia.org/wikipedia/commons/6/66/Pents06.jpg",
+    "7 Пентакли": "https://upload.wikimedia.org/wikipedia/commons/7/77/Pents07.jpg", "8 Пентакли": "https://upload.wikimedia.org/wikipedia/commons/8/88/Pents08.jpg",
+    "9 Пентакли": "https://upload.wikimedia.org/wikipedia/commons/9/99/Pents09.jpg", "10 Пентакли": "https://upload.wikimedia.org/wikipedia/commons/a/aa/Pents10.jpg",
+    "Паж Пентакли": "https://upload.wikimedia.org/wikipedia/commons/b/bb/PentsPage.jpg", "Рыцарь Пентакли": "https://upload.wikimedia.org/wikipedia/commons/c/cc/PentsKnight.jpg",
+    "Королева Пентакли": "https://upload.wikimedia.org/wikipedia/commons/d/dd/PentsQueen.jpg", "Король Пентакли": "https://upload.wikimedia.org/wikipedia/commons/e/ee/PentsKing.jpg",
+}
