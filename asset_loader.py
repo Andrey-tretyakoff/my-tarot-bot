@@ -189,7 +189,24 @@ def ensure_all_tarot_assets() -> tuple[int, int]:
     return ok, total
 
 
-def read_tarot_bytes(card_name: str) -> bytes | None:
+def try_download_tarot_card(card_name: str) -> bool:
+    """Догружает одну карту по запросу (не ждёт массовой preload)."""
+    wiki_file = TAROT_WIKI_FILES.get(card_name)
+    if not wiki_file:
+        logger.warning("Нет источника Wikimedia для карты: %s", card_name)
+        return False
+    dest = tarot_asset_path(card_name)
+    if dest.is_file() and dest.stat().st_size > 300:
+        return True
+    return _download_tarot_file(wiki_file, dest)
+
+
+def read_tarot_bytes(card_name: str) -> tuple[bytes | None, str]:
+    path = tarot_asset_path(card_name)
+    if path.is_file() and path.stat().st_size > 300:
+        return path.read_bytes(), "local"
+    if try_download_tarot_card(card_name):
+        return path.read_bytes(), "downloaded"
     return read_local_tarot_bytes(card_name)
 
 

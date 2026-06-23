@@ -11,13 +11,10 @@ logger = logging.getLogger(__name__)
 
 
 async def get_tarot_image_bytes(card_name: str) -> tuple[bytes | None, str]:
-    from paths import tarot_asset_path
-
-    data = await asyncio.to_thread(read_tarot_bytes, card_name)
+    data, source = await asyncio.to_thread(read_tarot_bytes, card_name)
     if data:
-        source = "local" if tarot_asset_path(card_name).is_file() else "placeholder"
         return data, source
-    logger.warning("Картинка не найдена даже как заглушка: %s", card_name)
+    logger.warning("Картинка не найдена: %s", card_name)
     return None, "none"
 
 

@@ -61,30 +61,37 @@ def _draw_zodiac_png(key: str, symbol: str, label: str) -> bytes:
     return buf.getvalue()
 
 
-def _draw_tarot_placeholder() -> bytes:
+def _draw_tarot_placeholder(card_name: str | None = None) -> bytes:
     img = Image.new("RGB", (400, 700), (20, 12, 48))
     draw = ImageDraw.Draw(img)
     draw.rectangle([20, 20, 380, 680], outline=GOLD, width=4)
     title_font = _load_font(42)
-    sub_font = _load_font(24)
-    draw.text((110, 300), "ТАРО", fill=GOLD, font=title_font)
-    draw.text((70, 370), "Карта дня", fill=WHITE, font=sub_font)
+    sub_font = _load_font(22)
+    name_font = _load_font(18)
+    draw.text((110, 280), "ТАРО", fill=GOLD, font=title_font)
+    draw.text((70, 340), "Карта дня", fill=WHITE, font=sub_font)
+    if card_name:
+        label = card_name.replace(" ", "\n") if len(card_name) > 14 else card_name
+        box = draw.textbbox((0, 0), label, font=name_font)
+        tw = box[2] - box[0]
+        draw.text(((400 - tw) / 2, 420), label, fill=GOLD, font=name_font, align="center")
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
     return buf.getvalue()
 
 
+def tarot_placeholder_bytes(card_name: str | None = None) -> bytes:
+    """Нейтральная заглушка — никогда не копирует изображение другой карты."""
+    return _draw_tarot_placeholder(card_name)
+
+
 def ensure_placeholder_tarot() -> Path:
     ensure_runtime_dirs()
-    if PLACEHOLDER_TAROT.is_file() and PLACEHOLDER_TAROT.stat().st_size > 500:
+    # Старые заглушки могли быть скопированы из реальной карты (>100 KB)
+    if PLACEHOLDER_TAROT.is_file() and PLACEHOLDER_TAROT.stat().st_size < 100_000:
         return PLACEHOLDER_TAROT
-    for candidate in TAROT_DIR.glob("*.jpg"):
-        if candidate.stat().st_size > 500:
-            PLACEHOLDER_TAROT.write_bytes(candidate.read_bytes())
-            logger.info("Заглушка Таро создана из %s", candidate.name)
-            return PLACEHOLDER_TAROT
     PLACEHOLDER_TAROT.write_bytes(_draw_tarot_placeholder())
-    logger.info("Заглушка Таро сгенерирована")
+    logger.info("Нейтральная заглушка Таро создана")
     return PLACEHOLDER_TAROT
 
 
@@ -114,12 +121,12 @@ def ensure_bundled_assets() -> None:
     ensure_all_zodiac_local()
 
 
-def read_local_tarot_bytes(card_name: str) -> bytes | None:
+def read_local_tarot_bytes(card_name: str) -> tuple[bytes | None, str]:
+    """Возвращает (bytes, source): local | placeholder."""
     path = tarot_asset_path(card_name)
     if path.is_file() and path.stat().st_size > 300:
-        return path.read_bytes()
-    placeholder = ensure_placeholder_tarot()
-    return placeholder.read_bytes()
+        return path.read_bytes(), "local"
+    return tarot_placeholder_bytes(card_name), "placeholder"
 
 
 def read_local_zodiac_bytes(zodiac_key: str) -> bytes | None:

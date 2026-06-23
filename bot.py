@@ -158,8 +158,9 @@ zodiac_kb = ReplyKeyboardMarkup(
 
 
 # ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
-async def send_tarot_photo(target, card_name: str, caption: str):
-    """Отправляет фото карты (target — Message или chat_id)."""
+async def send_tarot_photo(target, tarot_data: dict, caption: str):
+    """Отправляет фото карты. tarot_data — единый объект расклада (имя, позиция, толкование)."""
+    card_name = tarot_data["name"]
     photo_bytes, source = await get_tarot_image_bytes(card_name)
     logger.info("📤 Карта [%s]: %s", source, card_name)
 
@@ -247,8 +248,9 @@ async def _continue_zodiac_card_flow(message: types.Message) -> None:
     await _show_streak_ui(message, streak_info)
 
 
-async def send_with_fallback(message, card_name: str, caption: str):
-    await send_tarot_photo(message, card_name, caption)
+async def send_tarot_report(target, tarot_data: dict, caption: str):
+    """Текст и изображение из одного объекта tarot_data."""
+    await send_tarot_photo(target, tarot_data, caption)
 
 
 async def send_zodiac_photo(target, zodiac_key: str, caption: str = ""):
@@ -289,7 +291,7 @@ async def _send_daily_report(message: types.Message, user_id: int, zodiac_filter
             caption=f"♈️ Ваш знак: <b>{escape_html(zodiac_filter.capitalize())}</b>",
         )
 
-    await send_with_fallback(message, tarot_data["name"], card_text)
+    await send_tarot_report(message, tarot_data, card_text)
     await log_usage(DB_PATH, user_id, tarot_data["name"], "manual", zodiac_filter)
 
 
@@ -320,7 +322,7 @@ async def _send_bonus_card(message: types.Message, user_id: int, streak: int):
         f"<i>🔥 Вы получили эксклюзивную карту! Серия обновится завтра.</i>"
     )
 
-    await send_with_fallback(message, tarot_data["name"], caption)
+    await send_tarot_report(message, tarot_data, caption)
     await claim_bonus(DB_PATH, user_id)
     await log_usage(DB_PATH, user_id, tarot_data["name"], "bonus_7day", None)
 
@@ -692,7 +694,7 @@ async def daily_broadcast():
             if len(card_text) > 1024:
                 card_text = card_text[:1000] + "\n\n..."
 
-            await send_tarot_photo(uid, tarot_data["name"], card_text)
+            await send_tarot_photo(uid, tarot_data, card_text)
             await mark_broadcast_sent(DB_PATH, uid, "daily_card", today)
             await log_usage(DB_PATH, uid, tarot_data["name"], "broadcast", u_zodiac)
             sent += 1
