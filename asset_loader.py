@@ -1,23 +1,26 @@
-"""Загрузка изображений Таро и знаков зодиака с Wikimedia Commons."""
+"""Опциональная догрузка карт Таро с Wikimedia (выключена на Render по умолчанию)."""
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import ssl
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from local_assets import read_local_tarot_bytes, read_local_zodiac_bytes
 from network import get_proxy_url, ssl_verify_enabled
-from paths import TAROT_DIR, ZODIAC_DIR, ensure_runtime_dirs, tarot_asset_path, zodiac_asset_path
+from paths import TAROT_DIR, ensure_runtime_dirs, tarot_asset_path
 
 logger = logging.getLogger(__name__)
 
 USER_AGENT = "TarotDayBot/1.0 (Telegram bot; educational tarot project)"
 COMMONS_API = "https://commons.wikimedia.org/w/api.php"
+DOWNLOAD_DELAY_SEC = 1.5
 
-# Карты RWS: русское имя → имя файла на Wikimedia Commons
 TAROT_WIKI_FILES: dict[str, str] = {
     "Шут": "RWS_Tarot_00_Fool.jpg",
     "Маг": "RWS_Tarot_01_Magician.jpg",
@@ -99,20 +102,9 @@ TAROT_WIKI_FILES: dict[str, str] = {
     "Король Пентакли": "PentsKing.jpg",
 }
 
-ZODIAC_WIKI_FILES: dict[str, str] = {
-    "овен": "Aries.svg",
-    "телец": "Taurus.svg",
-    "близнецы": "Gemini.svg",
-    "рак": "Cancer.svg",
-    "лев": "Leo.svg",
-    "дева": "Virgo.svg",
-    "весы": "Libra.svg",
-    "скорпион": "Scorpio.svg",
-    "стрелец": "Sagittarius.svg",
-    "козерог": "Capricorn.svg",
-    "водолей": "Aquarius.svg",
-    "рыбы": "Pisces.svg",
-}
+
+def remote_download_enabled() -> bool:
+    return os.getenv("ENABLE_REMOTE_ASSETS", "").lower() in ("1", "true", "yes")
 
 
 def _build_opener() -> urllib.request.OpenerDirector:
@@ -137,20 +129,15 @@ def _http_get(url: str, timeout: int = 40) -> bytes | None:
     return None
 
 
-def _wikimedia_api_url(filename: str, *, thumb_width: int | None = None) -> str | None:
-    iiprop = "url"
-    params: dict[str, str | int] = {
+def _wikimedia_api_url(filename: str) -> str | None:
+    params = urllib.parse.urlencode({
         "action": "query",
         "format": "json",
         "prop": "imageinfo",
-        "iiprop": iiprop,
+        "iiprop": "url",
         "titles": f"File:{filename}",
-    }
-    if thumb_width:
-        params["iiprop"] = "url|thumburl"
-        params["iiurlwidth"] = thumb_width
-    encoded = urllib.parse.urlencode(params)
-    raw = _http_get(f"{COMMONS_API}?{encoded}", timeout=25)
+    })
+    raw = _http_get(f"{COMMONS_API}?{params}", timeout=25)
     if not raw:
         return None
     try:
@@ -158,8 +145,6 @@ def _wikimedia_api_url(filename: str, *, thumb_width: int | None = None) -> str 
         pages = payload.get("query", {}).get("pages", {})
         for page in pages.values():
             info = (page.get("imageinfo") or [{}])[0]
-            if thumb_width and info.get("thumburl"):
-                return info["thumburl"]
             url = info.get("url")
             if url:
                 return url
@@ -168,106 +153,45 @@ def _wikimedia_api_url(filename: str, *, thumb_width: int | None = None) -> str 
     return None
 
 
-def _wikimedia_thumb_png(filename: str, width: int = 256) -> str | None:
-    """PNG-превью для SVG-файлов знаков зодиака."""
-    if filename.lower().endswith(".svg"):
-        return _wikimedia_api_url(filename, thumb_width=width)
-    return _wikimedia_api_url(filename)
-
-
-def download_url_to_file(url: str, dest: Path) -> bool:
+def _download_tarot_file(wiki_file: str, dest: Path) -> bool:
+    url = _wikimedia_api_url(wiki_file)
+    if not url:
+        return False
     data = _http_get(url)
     if not data:
         return False
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(data)
+    logger.info("Скачано: %s → %s", wiki_file, dest.name)
     return True
 
 
-def download_wikimedia_file(filename: str, dest: Path, *, as_png: bool = False) -> bool:
-    if dest.exists() and dest.stat().st_size > 300:
-        return True
-
-    url = _wikimedia_thumb_png(filename) if as_png or filename.lower().endswith(".svg") else None
-    if not url:
-        url = _wikimedia_api_url(filename)
-    if not url:
-        logger.warning("Не удалось получить URL для %s", filename)
-        return False
-
-    if download_url_to_file(url, dest):
-        logger.info("Скачано: %s → %s", filename, dest.name)
-        return True
-
-    if not as_png and filename.lower().endswith(".svg"):
-        thumb = _wikimedia_thumb_png(filename)
-        if thumb and download_url_to_file(thumb, dest):
-            return True
-
-    logger.warning("Не удалось скачать %s", filename)
-    return False
-
-
-def ensure_tarot_card(card_name: str) -> Path | None:
-    ensure_runtime_dirs()
-    dest = tarot_asset_path(card_name)
-    if dest.exists():
-        return dest
-
-    wiki_file = TAROT_WIKI_FILES.get(card_name)
-    if not wiki_file:
-        logger.warning("Нет источника Wikimedia для карты: %s", card_name)
-        return None
-
-    if download_wikimedia_file(wiki_file, dest):
-        return dest
-    return None
-
-
-def ensure_zodiac_sign(zodiac_key: str) -> Path | None:
-    ensure_runtime_dirs()
-    key = zodiac_key.lower().strip()
-    dest = zodiac_asset_path(key)
-    if dest.exists():
-        return dest
-
-    wiki_file = ZODIAC_WIKI_FILES.get(key)
-    if not wiki_file:
-        return None
-
-    if download_wikimedia_file(wiki_file, dest, as_png=True):
-        return dest
-    return None
-
-
 def ensure_all_tarot_assets() -> tuple[int, int]:
-    """Скачивает все карты колоды RWS. Возвращает (успех, всего)."""
+    """Догрузка недостающих карт (только если ENABLE_REMOTE_ASSETS=true)."""
     ensure_runtime_dirs()
-    ok = 0
     total = len(TAROT_WIKI_FILES)
-    for card_name in TAROT_WIKI_FILES:
-        if ensure_tarot_card(card_name):
-            ok += 1
-    logger.info("Таро: загружено %s/%s", ok, total)
-    return ok, total
+    local_ok = sum(1 for name in TAROT_WIKI_FILES if tarot_asset_path(name).is_file())
 
+    if not remote_download_enabled():
+        logger.info("Таро (локально): %s/%s, удалённая загрузка выключена", local_ok, total)
+        return local_ok, total
 
-def ensure_all_zodiac_assets() -> tuple[int, int]:
-    ensure_runtime_dirs()
-    ok = 0
-    total = len(ZODIAC_WIKI_FILES)
-    for key in ZODIAC_WIKI_FILES:
-        if ensure_zodiac_sign(key):
+    ok = local_ok
+    for card_name, wiki_file in TAROT_WIKI_FILES.items():
+        dest = tarot_asset_path(card_name)
+        if dest.is_file() and dest.stat().st_size > 300:
+            continue
+        if _download_tarot_file(wiki_file, dest):
             ok += 1
-    logger.info("Зодиак: загружено %s/%s", ok, total)
+        time.sleep(DOWNLOAD_DELAY_SEC)
+
+    logger.info("Таро: %s/%s (локально + догрузка)", ok, total)
     return ok, total
 
 
 def read_tarot_bytes(card_name: str) -> bytes | None:
-    path = ensure_tarot_card(card_name)
-    return path.read_bytes() if path else None
+    return read_local_tarot_bytes(card_name)
 
 
 def read_zodiac_bytes(zodiac_key: str) -> bytes | None:
-    path = ensure_zodiac_sign(zodiac_key)
-    return path.read_bytes() if path else None
+    return read_local_zodiac_bytes(zodiac_key)

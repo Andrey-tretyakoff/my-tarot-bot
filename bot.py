@@ -130,6 +130,14 @@ class RuneStates(StatesGroup):
     waiting_birth_date = State()
     waiting_gender = State()
 
+class ZodiacStates(StatesGroup):
+    waiting_sign = State()
+
+# Ключи для продолжения сценария после выбора знака
+AFTER_ZODIAC_ASTRO = "astro"
+AFTER_ZODIAC_RUNES = "runes"
+AFTER_ZODIAC_CARD = "card_zodiac"
+
 # ================= КЛАВИАТУРЫ =================
 ZODIAC_SIGNS = [
     ("♈️ Овен", "овен"), ("♉️ Телец", "телец"), ("♊️ Близнецы", "близнецы"),
@@ -173,14 +181,85 @@ async def send_tarot_photo(target, card_name: str, caption: str):
     return False
 
 
+async def _prompt_zodiac_for(message: types.Message, state: FSMContext, action: str) -> None:
+    await state.update_data(after_zodiac=action)
+    await state.set_state(ZodiacStates.waiting_sign)
+    await message.answer("⚠️ Сначала выберите знак зодиака:", reply_markup=zodiac_kb)
+
+
+async def _continue_astro_flow(message: types.Message, state: FSMContext) -> None:
+    await state.clear()
+    profile = await get_astro_profile(DB_PATH, message.from_user.id)
+    user_zodiac = await get_user_zodiac(DB_PATH, message.from_user.id)
+
+    if profile and profile.get("birth_date"):
+        zodiac_text = f"♈️ Знак: {user_zodiac.capitalize()}" if user_zodiac else "⚠️ Знак не выбран"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Рассчитать по текущим данным", callback_data="astro_calc")],
+            [InlineKeyboardButton(text="🔄 Ввести заново", callback_data="astro_reset")]
+        ])
+        await message.answer(
+            f"🔮 Персональный астропрогноз\n\n"
+            f"Сохраненные данные:\n📅 Дата: {profile['birth_date']}\n{zodiac_text}\n\n"
+            f"Что делаем?",
+            reply_markup=kb,
+        )
+    else:
+        await message.answer("🔮 Персональный астропрогноз\n\nОтправьте дату рождения (ДД.ММ.ГГГГ):")
+        await state.set_state(AstroStates.waiting_birth_date)
+
+
+async def _continue_runes_flow(message: types.Message, state: FSMContext) -> None:
+    user_zodiac = await get_user_zodiac(DB_PATH, message.from_user.id)
+    profile = await get_astro_profile(DB_PATH, message.from_user.id)
+    birth_date = profile.get("birth_date") if profile else None
+
+    if birth_date:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Использовать сохраненные", callback_data="runes_use_saved")],
+            [InlineKeyboardButton(text="🔄 Ввести новую дату", callback_data="runes_new_data")]
+        ])
+        await message.answer(
+            f"ᚠ Руны недели\n\n"
+            f"Сохраненные данные:\n♈️ Знак: {user_zodiac.capitalize()}\n📅 Дата: {birth_date}\n\n"
+            f"Использовать их для расклада?",
+            reply_markup=kb,
+        )
+    else:
+        await message.answer("📅 Руны требуют точности. Отправь дату рождения (ДД.ММ.ГГГГ):")
+        await state.update_data(zodiac=user_zodiac)
+        await state.set_state(RuneStates.waiting_birth_date)
+
+
+async def _continue_zodiac_card_flow(message: types.Message) -> None:
+    user_zodiac = await get_user_zodiac(DB_PATH, message.from_user.id)
+    await message.answer(
+        f"🔮 Карта для {user_zodiac.capitalize()}...",
+        reply_markup=get_main_kb(message.from_user.id),
+    )
+    streak_info = await update_user_streak(DB_PATH, message.from_user.id)
+
+    if streak_info.get('is_bonus_day') and not streak_info.get('bonus_claimed'):
+        await _send_bonus_card(message, message.from_user.id, streak_info['streak'])
+    else:
+        await _send_daily_report(message, message.from_user.id, zodiac_filter=user_zodiac)
+
+    await _show_streak_ui(message, streak_info)
+
+
 async def send_with_fallback(message, card_name: str, caption: str):
     await send_tarot_photo(message, card_name, caption)
 
 
 async def send_zodiac_photo(target, zodiac_key: str, caption: str = ""):
-    """Отправляет символ знака зодиака (локальный файл с Wikimedia)."""
+    """Отправляет символ знака зодиака (локальный файл)."""
     photo_bytes, source = await get_zodiac_image_bytes(zodiac_key)
     if not photo_bytes:
+        if caption:
+            if isinstance(target, int):
+                await bot.send_message(target, caption, parse_mode="HTML")
+            else:
+                await target.answer(caption, parse_mode="HTML")
         return False
     photo = BufferedInputFile(photo_bytes, filename="zodiac.png")
     try:
@@ -306,17 +385,37 @@ async def cmd_start(message: types.Message):
 
 
 @dp.message(Command("zodiac"))
-async def cmd_zodiac(message: types.Message):
+async def cmd_zodiac(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("♈️ Выберите ваш знак зодиака:", reply_markup=zodiac_kb)
 
 
 @dp.message(F.text.in_(ZODIAC_MAP.keys()))
-async def handle_zodiac_select(message: types.Message):
+async def handle_zodiac_select(message: types.Message, state: FSMContext):
     zodiac_key = ZODIAC_MAP[message.text]
     await set_user_zodiac(DB_PATH, message.from_user.id, zodiac_key)
+
+    data = await state.get_data()
+    after_action = data.get("after_zodiac")
+    current_state = await state.get_state()
+
+    if current_state == ZodiacStates.waiting_sign.state and after_action:
+        caption = f"✅ Знак <b>{escape_html(message.text)}</b> сохранён!"
+        await send_zodiac_photo(message, zodiac_key, caption=caption)
+        await message.answer("Продолжаем...", reply_markup=get_main_kb(message.from_user.id))
+
+        if after_action == AFTER_ZODIAC_ASTRO:
+            await _continue_astro_flow(message, state)
+        elif after_action == AFTER_ZODIAC_RUNES:
+            await _continue_runes_flow(message, state)
+        elif after_action == AFTER_ZODIAC_CARD:
+            await _continue_zodiac_card_flow(message)
+        return
+
     caption = f"✅ Знак <b>{escape_html(message.text)}</b> сохранён! 🪐"
     if not await send_zodiac_photo(message, zodiac_key, caption=caption):
         await message.answer(caption, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
+    await state.clear()
     await message.answer("Выберите действие:", reply_markup=get_main_kb(message.from_user.id))
 
 
@@ -334,20 +433,12 @@ async def handle_get_card_random(message: types.Message):
 
 
 @dp.message(F.text == "♈️ Карта по знаку зодиака")
-async def handle_get_card_zodiac(message: types.Message):
+async def handle_get_card_zodiac(message: types.Message, state: FSMContext):
     user_zodiac = await get_user_zodiac(DB_PATH, message.from_user.id)
     if not user_zodiac:
-        return await message.answer("⚠️ Сначала выберите знак зодиака:", reply_markup=zodiac_kb)
+        return await _prompt_zodiac_for(message, state, AFTER_ZODIAC_CARD)
 
-    await message.answer(f"🔮 Карта для {user_zodiac.capitalize()}...")
-    streak_info = await update_user_streak(DB_PATH, message.from_user.id)
-
-    if streak_info.get('is_bonus_day') and not streak_info.get('bonus_claimed'):
-        await _send_bonus_card(message, message.from_user.id, streak_info['streak'])
-    else:
-        await _send_daily_report(message, message.from_user.id, zodiac_filter=user_zodiac)
-
-    await _show_streak_ui(message, streak_info)
+    await _continue_zodiac_card_flow(message)
 
 
 @dp.message(F.text == "🌙 Лунные сутки")
@@ -436,26 +527,10 @@ async def cmd_streak(message: types.Message):
 @dp.message(F.text == "🔮 Астропрогноз")
 async def handle_astro_start(message: types.Message, state: FSMContext):
     await state.clear()
-    profile = await get_astro_profile(DB_PATH, message.from_user.id)
     user_zodiac = await get_user_zodiac(DB_PATH, message.from_user.id)
-
-    if profile and profile.get("birth_date"):
-        zodiac_text = f"♈️ Знак: {user_zodiac.capitalize()}" if user_zodiac else "⚠️ Знак не выбран"
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Рассчитать по текущим данным", callback_data="astro_calc")],
-            [InlineKeyboardButton(text="🔄 Ввести заново", callback_data="astro_reset")]
-        ])
-        await message.answer(
-            f"🔮 Персональный астропрогноз\n\n"
-            f"Сохраненные данные:\n📅 Дата: {profile['birth_date']}\n{zodiac_text}\n\n"
-            f"Что делаем?",
-            reply_markup=kb
-        )
-    else:
-        if not user_zodiac:
-            return await message.answer("⚠️ Сначала выберите знак зодиака:", reply_markup=zodiac_kb)
-        await message.answer("🔮 Персональный астропрогноз\n\nОтправьте дату рождения (ДД.ММ.ГГГГ):")
-        await state.set_state(AstroStates.waiting_birth_date)
+    if not user_zodiac:
+        return await _prompt_zodiac_for(message, state, AFTER_ZODIAC_ASTRO)
+    await _continue_astro_flow(message, state)
 
 @dp.callback_query(F.data == "astro_calc")
 async def handle_astro_calc(cb: types.CallbackQuery, state: FSMContext):
@@ -536,29 +611,10 @@ async def cmd_cancel(message: types.Message, state: FSMContext):
 # ================= РУНЫ НЕДЕЛИ =================
 @dp.message(F.text == "ᚠ Руны недели")
 async def handle_runes_week(message: types.Message, state: FSMContext):
-    from db import get_user_zodiac, get_astro_profile
     user_zodiac = await get_user_zodiac(DB_PATH, message.from_user.id)
     if not user_zodiac:
-        return await message.answer("⚠️ Для рунического расклада нужно сначала выбрать знак зодиака:", reply_markup=zodiac_kb)
-
-    profile = await get_astro_profile(DB_PATH, message.from_user.id)
-    birth_date = profile.get("birth_date") if profile else None
-
-    if birth_date:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Использовать сохраненные", callback_data="runes_use_saved")],
-            [InlineKeyboardButton(text="🔄 Ввести новую дату", callback_data="runes_new_data")]
-        ])
-        await message.answer(
-            f"ᚠ Руны недели\n\n"
-            f"Сохраненные данные:\n♈️ Знак: {user_zodiac.capitalize()}\n📅 Дата: {birth_date}\n\n"
-            f"Использовать их для расклада?",
-            reply_markup=kb
-        )
-    else:
-        await message.answer("📅 Руны требуют точности. Отправь дату рождения (ДД.ММ.ГГГГ):")
-        await state.update_data(zodiac=user_zodiac)
-        await state.set_state(RuneStates.waiting_birth_date)
+        return await _prompt_zodiac_for(message, state, AFTER_ZODIAC_RUNES)
+    await _continue_runes_flow(message, state)
 
 @dp.callback_query(F.data == "runes_use_saved")
 async def cb_runes_saved(cb: types.CallbackQuery, state: FSMContext):
@@ -726,9 +782,10 @@ async def ensure_telegram_connection(retries: int = 3) -> bool:
 
 
 def _preload_assets_sync() -> None:
-    from asset_loader import ensure_all_tarot_assets, ensure_all_zodiac_assets
+    from local_assets import ensure_bundled_assets
+    from asset_loader import ensure_all_tarot_assets
+    ensure_bundled_assets()
     ensure_all_tarot_assets()
-    ensure_all_zodiac_assets()
 
 
 async def _preload_assets_background() -> None:
