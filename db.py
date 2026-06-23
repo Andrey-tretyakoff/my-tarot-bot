@@ -105,8 +105,18 @@ async def register_user(db_path: str, user_id: int, username: str | None, first_
         await db.commit()
 
 async def set_user_zodiac(db_path: str, user_id: int, zodiac: str):
+    key = (zodiac or "").lower().strip()
+    if not key:
+        return
     async with aiosqlite.connect(db_path) as db:
-        await db.execute('UPDATE users SET zodiac = ? WHERE user_id = ?', (zodiac.lower(), user_id))
+        await db.execute(
+            '''
+            INSERT INTO users (user_id, zodiac)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET zodiac = excluded.zodiac
+            ''',
+            (user_id, key),
+        )
         await db.commit()
 
 async def get_user_zodiac(db_path: str, user_id: int) -> str | None:
