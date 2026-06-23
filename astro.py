@@ -4,6 +4,9 @@
 import math
 import random
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
+MSK = ZoneInfo("Europe/Moscow")
 
 # ================= КОНСТАНТЫ =================
 ZODIAC_SIGNS = {
@@ -64,12 +67,15 @@ def get_zodiac_sign(birth_date: str) -> str:
 def calculate_moon_phase(date: datetime = None) -> dict:
     """Расчёт фазы Луны (упрощённый алгоритм)"""
     if date is None:
-        date = datetime.now()
+        date = datetime.now(MSK)
+    elif date.tzinfo is None:
+        date = date.replace(tzinfo=MSK)
+    else:
+        date = date.astimezone(MSK)
 
-    # Алгоритм на основе известного новолуния
-    known_new_moon = datetime(2024, 1, 11)
+    known_new_moon = datetime(2024, 1, 11, 11, 57, tzinfo=MSK)
     lunar_cycle = 29.53058867
-    days_since = (date - known_new_moon).days
+    days_since = (date - known_new_moon).total_seconds() / 86400
     moon_age = days_since % lunar_cycle
     phase = moon_age / lunar_cycle
 
@@ -104,7 +110,7 @@ def calculate_moon_phase(date: datetime = None) -> dict:
 def get_planetary_hour(birth_time: str, date: datetime = None) -> str:
     """Определяет планетарный час (упрощённо)"""
     if date is None:
-        date = datetime.now()
+        date = datetime.now(MSK)
 
     try:
         hour = int(birth_time.split(':')[0]) if birth_time and ':' in birth_time else 12
@@ -139,7 +145,7 @@ def calculate_daily_forecast(birth_date: str, birth_time: str, birth_place: str,
     sign_data = ZODIAC_SIGNS[sign]
     moon = calculate_moon_phase()
     life_path = calculate_life_path_number(birth_date)
-    today = datetime.now()
+    today = datetime.now(MSK)
     today_str = today.strftime("%d.%m.%Y")
     weekday_num = today.weekday()  # 0=Пн, 6=Вс
 
@@ -224,7 +230,8 @@ def calculate_daily_forecast(birth_date: str, birth_time: str, birth_place: str,
     )
 
     # Дополнительные заметки
-    if birth_time.lower() in ["не знаю", "неизвестно", ""]:
+    time_hint = (birth_time or "").strip().lower()
+    if time_hint in ["не знаю", "неизвестно", "", "00:00"]:
         forecast += "\n\n<i>🕰️ Для точного расчёта асцендента укажите время рождения.</i>"
 
     return forecast

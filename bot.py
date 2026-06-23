@@ -1,15 +1,18 @@
 import asyncio
 import os
+import sys
 import logging
 import random
 import re
-from datetime import datetime, timedelta, date, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile, BufferedInputFile
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramNetworkError
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.fsm.storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
@@ -18,21 +21,80 @@ from meditations import get_meditation_of_day
 # 📦 Импорты из модулей
 from db import (init_db, register_user, set_user_zodiac, get_user_zodiac, log_usage,
                 get_all_users, get_stats, save_astro_profile, get_astro_profile,
-                delete_astro_profile, update_user_streak, claim_bonus)
-from tarot_db import get_card, get_random_card, format_daily_message, escape_html, TAROT_DB
-from image_gen import get_tarot_media, generate_ai_url
+                delete_astro_profile, update_user_streak, claim_bonus,
+                was_broadcast_sent, mark_broadcast_sent)
+from tarot_db import get_card, format_daily_message, escape_html, TAROT_DB
+from image_gen import get_tarot_image_bytes, get_zodiac_image_bytes
 from lunar import get_lunar_day
 from astro import calculate_daily_forecast
+from network import get_proxy_url, ssl_verify_enabled
+from instance_lock import acquire_single_instance, release_single_instance
+
+if sys.platform == "win32":
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 load_dotenv()
+
+
+class BotAiohttpSession(AiohttpSession):
+    """Сессия с опцией отключения проверки SSL (нужно для VPN вроде Happ с HTTPS-перехватом)."""
+
+    def __init__(self, proxy=None, ssl_verify: bool = True, **kwargs):
+        super().__init__(proxy=proxy, **kwargs)
+        if not ssl_verify:
+            self._connector_init["ssl"] = False
+
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 DB_PATH = os.getenv("DB_PATH", "tarot_bot.db")
+TELEGRAM_PROXY = get_proxy_url()
+TELEGRAM_SSL_VERIFY = ssl_verify_enabled()
 MSK = ZoneInfo("Europe/Moscow")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-bot = Bot(token=BOT_TOKEN, timeout=60) # ✅ Таймаут увеличен
-dp = Dispatcher()
+logger = logging.getLogger(__name__)
+
+
+def _validate_config() -> None:
+    if not BOT_TOKEN or not BOT_TOKEN.strip():
+        raise SystemExit(
+            "❌ BOT_TOKEN не задан.\n"
+            "Создайте файл .env в папке проекта и добавьте:\n"
+            "BOT_TOKEN=токен_от_BotFather"
+        )
+
+
+def create_bot() -> Bot:
+    _validate_config()
+
+    if TELEGRAM_PROXY and TELEGRAM_PROXY.startswith("socks"):
+        try:
+            import aiohttp_socks  # noqa: F401
+        except ImportError as exc:
+            raise SystemExit(
+                "❌ Для SOCKS-прокси установите пакет:\n"
+                "pip install aiohttp-socks"
+            ) from exc
+
+    session = BotAiohttpSession(
+        proxy=TELEGRAM_PROXY,
+        ssl_verify=TELEGRAM_SSL_VERIFY,
+    ) if TELEGRAM_PROXY else BotAiohttpSession(ssl_verify=TELEGRAM_SSL_VERIFY)
+    if TELEGRAM_PROXY:
+        source = "TELEGRAM_PROXY" if os.getenv("TELEGRAM_PROXY") else "системный прокси Windows"
+        ssl_note = "" if TELEGRAM_SSL_VERIFY else " (SSL verify off)"
+        logger.info("🌐 Telegram API через %s: %s%s", source, TELEGRAM_PROXY, ssl_note)
+
+    return Bot(token=BOT_TOKEN, session=session)
+
+
+bot = create_bot()
+dp = Dispatcher(storage=MemoryStorage())
 
 # ================= ВАЛИДАТОРЫ =================
 def validate_date_format(date_str: str) -> str | None:
@@ -88,28 +150,49 @@ zodiac_kb = ReplyKeyboardMarkup(
 
 
 # ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
+async def send_tarot_photo(target, card_name: str, caption: str):
+    """Отправляет фото карты (target — Message или chat_id)."""
+    photo_bytes, source = await get_tarot_image_bytes(card_name)
+    logger.info("📤 Карта [%s]: %s", source, card_name)
+
+    if photo_bytes:
+        photo = BufferedInputFile(photo_bytes, filename="tarot.jpg")
+        try:
+            if isinstance(target, int):
+                await bot.send_photo(target, photo=photo, caption=caption, parse_mode="HTML")
+            else:
+                await target.answer_photo(photo=photo, caption=caption, parse_mode="HTML")
+            return True
+        except TelegramBadRequest as exc:
+            logger.warning("⚠️ Telegram отклонил фото: %s", exc)
+
+    if isinstance(target, int):
+        await bot.send_message(target, caption, parse_mode="HTML")
+    else:
+        await target.answer(caption, parse_mode="HTML")
+    return False
+
+
 async def send_with_fallback(message, card_name: str, caption: str):
-    original_url, source = await get_tarot_media(card_name)
-    logging.info(f"📤 Пробую отправить [{source}]: {card_name}")
+    await send_tarot_photo(message, card_name, caption)
 
-    try:
-        await message.answer_photo(photo=original_url, caption=caption, parse_mode="HTML")
-        logging.info("✅ Оригинал отправлен успешно")
-        return
-    except TelegramBadRequest as e:
-        logging.warning(f"⚠️ Оригинал отклонён: {e}")
 
-    logging.info("🔄 Генерирую AI-фоллбэк...")
-    ai_url = generate_ai_url(card_name)
+async def send_zodiac_photo(target, zodiac_key: str, caption: str = ""):
+    """Отправляет символ знака зодиака (локальный файл с Wikimedia)."""
+    photo_bytes, source = await get_zodiac_image_bytes(zodiac_key)
+    if not photo_bytes:
+        return False
+    photo = BufferedInputFile(photo_bytes, filename="zodiac.png")
     try:
-        await message.answer_photo(photo=ai_url, caption=caption, parse_mode="HTML")
-        logging.info("✅ AI-картинка отправлена успешно")
-    except TelegramBadRequest as e:
-        logging.warning(f"⚠️ AI тоже отклонён: {e}")
-        await message.answer(caption, parse_mode="HTML")
-    except Exception as e:
-        logging.error(f"❌ Ошибка отправки: {e}")
-        await message.answer(caption, parse_mode="HTML")
+        if isinstance(target, int):
+            await bot.send_photo(target, photo=photo, caption=caption or None, parse_mode="HTML")
+        else:
+            await target.answer_photo(photo=photo, caption=caption or None, parse_mode="HTML")
+        logger.info("📤 Знак [%s]: %s", source, zodiac_key)
+        return True
+    except TelegramBadRequest as exc:
+        logger.warning("⚠️ Telegram отклонил фото знака: %s", exc)
+        return False
 
 
 async def _send_daily_report(message: types.Message, user_id: int, zodiac_filter: str | None = None):
@@ -119,6 +202,13 @@ async def _send_daily_report(message: types.Message, user_id: int, zodiac_filter
 
     if len(card_text) > 1024:
         card_text = card_text[:1000] + "\n\n<i>...обрезано из-за лимита</i>"
+
+    if zodiac_filter:
+        await send_zodiac_photo(
+            message,
+            zodiac_filter,
+            caption=f"♈️ Ваш знак: <b>{escape_html(zodiac_filter.capitalize())}</b>",
+        )
 
     await send_with_fallback(message, tarot_data["name"], card_text)
     await log_usage(DB_PATH, user_id, tarot_data["name"], "manual", zodiac_filter)
@@ -140,7 +230,7 @@ async def _send_bonus_card(message: types.Message, user_id: int, streak: int):
         "position": "перевернутая" if is_reversed else "прямая",
         "meaning": card["rev"] if is_reversed else card["up"],
         "astro": card["astro"],
-        "date": date.today().isoformat()
+        "date": datetime.now(MSK).date().isoformat()
     }
 
     caption = (
@@ -224,10 +314,9 @@ async def cmd_zodiac(message: types.Message):
 async def handle_zodiac_select(message: types.Message):
     zodiac_key = ZODIAC_MAP[message.text]
     await set_user_zodiac(DB_PATH, message.from_user.id, zodiac_key)
-    await message.answer(f"✅ Знак <b>{escape_html(message.text)}</b> сохранен! 🪐", parse_mode="HTML",
-                         reply_markup=ReplyKeyboardRemove())
-
-    # 👇 ИСПРАВЛЕНИЕ: вызываем функцию динамического меню
+    caption = f"✅ Знак <b>{escape_html(message.text)}</b> сохранён! 🪐"
+    if not await send_zodiac_photo(message, zodiac_key, caption=caption):
+        await message.answer(caption, parse_mode="HTML", reply_markup=ReplyKeyboardRemove())
     await message.answer("Выберите действие:", reply_markup=get_main_kb(message.from_user.id))
 
 
@@ -265,15 +354,11 @@ async def handle_get_card_zodiac(message: types.Message):
 async def handle_lunar_day(message: types.Message):
     from lunar import get_lunar_day, get_weekly_energy_forecast
     from chart_gen import get_chart_url
-    import os
 
     await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
     today = get_lunar_day()
     week = get_weekly_energy_forecast()
-    chart_path = get_chart_url(week)
-
-    if not chart_path or not os.path.exists(chart_path):
-        return await message.answer("❌ Ошибка генерации графика.")
+    chart_path = await asyncio.to_thread(get_chart_url, week)
 
     magic_note = f"\n✨ СЕГОДНЯ ОСОБО ДЛЯ МАГИИ: {today['magic_type']}" if today['is_magic_day'] else ""
     caption = (
@@ -283,15 +368,16 @@ async def handle_lunar_day(message: types.Message):
         f"⏳ Смена лунных суток: {today['next_transition']}"
     )
 
+    if not chart_path or not os.path.exists(chart_path):
+        return await message.answer(caption)
+
     try:
-        await asyncio.sleep(0.5)  # Даем диску завершить запись
-        photo_file = FSInputFile(chart_path)
-        await message.answer_photo(photo=photo_file, caption=caption, timeout=30)
-    except Exception as e:
-        print(f"❌ Ошибка отправки лунных суток: {e}")
+        await message.answer_photo(photo=FSInputFile(chart_path), caption=caption, timeout=30)
+    except Exception as exc:
+        logger.error("Ошибка отправки лунных суток: %s", exc)
         await message.answer(caption)
     finally:
-        if os.path.exists(chart_path):
+        if chart_path and os.path.exists(chart_path):
             os.remove(chart_path)
 
 
@@ -305,7 +391,7 @@ async def cmd_stats_button(message: types.Message):
     if not stats:
         return await message.answer("📊 Статистики пока нет")
 
-    text = "📊 <b>Последние 50 действий (сначала старые ↓):</b>\n\n"
+    text = "📊 <b>Последние 50 действий (сначала новые ↓):</b>\n\n"
     for username, first_name, u_zodiac, card, usage_type, z_filter, dt_str in stats:
         name = escape_html(username or first_name or "Пользователь")
         dt = datetime.fromisoformat(dt_str).strftime("%d.%m %H:%M")
@@ -349,6 +435,7 @@ async def cmd_streak(message: types.Message):
 
 @dp.message(F.text == "🔮 Астропрогноз")
 async def handle_astro_start(message: types.Message, state: FSMContext):
+    await state.clear()
     profile = await get_astro_profile(DB_PATH, message.from_user.id)
     user_zodiac = await get_user_zodiac(DB_PATH, message.from_user.id)
 
@@ -371,22 +458,29 @@ async def handle_astro_start(message: types.Message, state: FSMContext):
         await state.set_state(AstroStates.waiting_birth_date)
 
 @dp.callback_query(F.data == "astro_calc")
-async def handle_astro_calc(cb: types.CallbackQuery):
+async def handle_astro_calc(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
+    await state.clear()
     profile = await get_astro_profile(DB_PATH, cb.from_user.id)
     if not profile or not profile.get("birth_date"):
-        return await cb.message.answer("⚠️ Данные не найдены.")
+        return await cb.message.answer("⚠️ Данные не найдены. Введите дату заново через «🔄 Ввести заново».")
     await cb.message.answer("⏳ Рассчитываю...")
-    forecast = calculate_daily_forecast(
-        profile["birth_date"],
-        profile.get("birth_time", "00:00"),
-        "Москва", "Москва" # Дефолтные города
-    )
-    await cb.message.answer(forecast)
+    try:
+        forecast = calculate_daily_forecast(
+            profile["birth_date"],
+            profile.get("birth_time") or "00:00",
+            profile.get("birth_place") or "Москва",
+            profile.get("current_place") or "Москва",
+        )
+        await cb.message.answer(forecast, parse_mode="HTML")
+    except Exception as exc:
+        logger.exception("Ошибка астропрогноза: %s", exc)
+        await cb.message.answer("⚠️ Не удалось рассчитать прогноз. Попробуйте «🔄 Ввести заново».")
 
 @dp.callback_query(F.data == "astro_reset")
 async def handle_astro_reset(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
+    await state.clear()
     await delete_astro_profile(DB_PATH, cb.from_user.id)
     await cb.message.answer("🔄 Данные сброшены. Введите дату рождения (ДД.ММ.ГГГГ):")
     await state.set_state(AstroStates.waiting_birth_date)
@@ -412,17 +506,21 @@ async def astro_birth_time(message: types.Message, state: FSMContext):
         "birth_time": valid_time,
         "birth_place": "Москва",
         "current_place": "Москва",
-        "updated_at": datetime.now().isoformat()
+        "updated_at": datetime.now(MSK).isoformat()
     }
     await save_astro_profile(DB_PATH, message.from_user.id, profile_data)
     await state.clear()
 
     await message.answer("✅ Данные сохранены! Генерирую прогноз...")
-    forecast = calculate_daily_forecast(
-        profile_data["birth_date"], profile_data["birth_time"],
-        profile_data["birth_place"], profile_data["current_place"]
-    )
-    await message.answer(forecast)
+    try:
+        forecast = calculate_daily_forecast(
+            profile_data["birth_date"], profile_data["birth_time"],
+            profile_data["birth_place"], profile_data["current_place"]
+        )
+        await message.answer(forecast, parse_mode="HTML")
+    except Exception as exc:
+        logger.exception("Ошибка астропрогноза: %s", exc)
+        await message.answer("⚠️ Не удалось рассчитать прогноз. Попробуйте снова через «🔮 Астропрогноз».")
 
 
 @dp.message(Command("cancel"))
@@ -465,13 +563,17 @@ async def handle_runes_week(message: types.Message, state: FSMContext):
 @dp.callback_query(F.data == "runes_use_saved")
 async def cb_runes_saved(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
+    await state.clear()
     profile = await get_astro_profile(DB_PATH, cb.from_user.id)
     zodiac = await get_user_zodiac(DB_PATH, cb.from_user.id)
+    if not profile or not profile.get("birth_date"):
+        return await cb.message.answer("⚠️ Дата рождения не найдена. Введите её заново.")
     await _run_runes_magic(cb.message, zodiac, profile["birth_date"], "unknown")
 
 @dp.callback_query(F.data == "runes_new_data")
 async def cb_runes_new(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
+    await state.clear()
     await cb.message.answer("📅 Отправь новую дату рождения (ДД.ММ.ГГГГ):")
     zodiac = await get_user_zodiac(DB_PATH, cb.from_user.id)
     await state.update_data(zodiac=zodiac)
@@ -499,110 +601,60 @@ async def rune_gender_handler(message: types.Message, state: FSMContext):
 
 
 async def _run_runes_magic(message, zodiac, birth_date, gender):
-    from runes_logic import get_weekly_rune_spread, RUNES_DB
-    from rune_drawer import generate_rune_bytes  # ✅ Исправленный импорт
-    from aiogram.types import BufferedInputFile
+    from runes_logic import get_weekly_rune_spread
 
-    status_msg = await message.answer("ᚠ Генерирую расклад...")
+    status_msg = await message.answer("ᚠ Составляю расклад...")
     try:
-        # Синхронные вызовы здесь безопасны: они занимают <50мс
-        text, rune_names = get_weekly_rune_spread(zodiac, birth_date, gender)
-        symbols = [next((r['sym'] for r in RUNES_DB if r['ru'] == name), "?") for name in rune_names]
-
-        # Генерация в RAM (без диска и потоков)
-        photo_bytes = generate_rune_bytes(symbols[0], symbols[1], symbols[2])
-
+        text, _ = await asyncio.to_thread(get_weekly_rune_spread, zodiac, birth_date, gender)
         await status_msg.delete()
-
-        if photo_bytes:
-            await message.answer_photo(
-                photo=BufferedInputFile(photo_bytes, filename="runes.jpg"),
-                caption=text,
-                timeout=60
-            )
-        else:
-            await message.answer(text)
-
-        await log_usage(DB_PATH, message.from_user.id, "Руны недели", "runes_spread", zodiac)
-
-    except Exception as e:
-        print(f"❌ Ошибка рун: {e}")
-        await status_msg.delete()
-        await message.answer("⚠️ Ошибка при раскладе. Попробуйте позже.",
-                             reply_markup=get_main_kb(message.from_user.id))
-
-
-# Функция "Магии" и отправки (Пункты 5, 6, 7, 8)
-async def _run_runes_magic(message, zodiac, birth_date, gender):
-    from runes_logic import get_weekly_rune_spread, RUNES_DB
-    from rune_drawer import generate_rune_bytes
-
-    # 1. Анимация магии
-    magic_msg = await message.answer("🔮 Вхожу в транс...")
-    await asyncio.sleep(1.5)
-    await magic_msg.edit_text("🌀 Соединяю потоки энергии...")
-    await asyncio.sleep(1.5)
-    await magic_msg.edit_text("✨ Руны пробуждаются...")
-
-    # 2. Генерация текста
-    try:
-        text, rune_names = get_weekly_rune_spread(zodiac, birth_date, gender)
-        symbols = [next((r['sym'] for r in RUNES_DB if r['ru'] == name), "?") for name in rune_names]
-
-        # 3. Рисование картинки
-        image_path = generate_rune_bytes(symbols[0], symbols[1], symbols[2])
-
-        await magic_msg.delete()  # Удаляем сообщение "Руны пробуждаются"
-
-        # 4. Отправка
-        if image_path and os.path.exists(image_path):
-            await message.answer_photo(photo=FSInputFile(image_path), caption=text, parse_mode="HTML")
-            os.remove(image_path)
-        else:
-            await message.answer(text, parse_mode="HTML")
-
+        await message.answer(text, parse_mode="HTML")
         await log_usage(DB_PATH, message.from_user.id, "Руны недели", "runes_spread", zodiac)
     except Exception as e:
-        print(f"Ошибка рун: {e}")
-        await message.answer("⚠️ Произошла ошибка при раскладе. Попробуй позже.",
-                             reply_markup=get_main_kb(message.from_user.id))
+        logger.exception("❌ Ошибка рун: %s", e)
+        await status_msg.delete()
+        await message.answer(
+            "⚠️ Ошибка при раскладе. Попробуйте позже.",
+            reply_markup=get_main_kb(message.from_user.id),
+        )
+
 
 # ================= РАССЫЛКИ =================
 async def daily_broadcast():
-    logging.info("🚀 Запуск рассылки 9:00 МСК...")
+    logger.info("🚀 Запуск рассылки 9:00 МСК...")
+    today = datetime.now(MSK).date().isoformat()
     users = await get_all_users(DB_PATH)
-    sent = blocked = 0
+    sent = blocked = skipped = 0
     for uid in users:
         try:
+            if await was_broadcast_sent(DB_PATH, uid, "daily_card", today):
+                skipped += 1
+                continue
+
             u_zodiac = await get_user_zodiac(DB_PATH, uid)
             tarot_data = get_card(user_id=uid, zodiac=u_zodiac, context="zodiac")
             card_text = format_daily_message(tarot_data, zodiac_label=u_zodiac)
             if len(card_text) > 1024:
                 card_text = card_text[:1000] + "\n\n..."
 
-            orig, _ = await get_tarot_media(tarot_data["name"])
-            try:
-                await bot.send_photo(uid, photo=orig, caption=card_text, parse_mode="HTML")
-            except TelegramBadRequest:
-                await bot.send_photo(uid, photo=generate_ai_url(tarot_data["name"]), caption=card_text,
-                                     parse_mode="HTML")
-
+            await send_tarot_photo(uid, tarot_data["name"], card_text)
+            await mark_broadcast_sent(DB_PATH, uid, "daily_card", today)
             await log_usage(DB_PATH, uid, tarot_data["name"], "broadcast", u_zodiac)
             sent += 1
             await asyncio.sleep(0.05)
         except (TelegramBadRequest, TelegramForbiddenError):
             blocked += 1
         except Exception as e:
-            logging.error(f"Ошибка рассылки {uid}: {e}")
-    logging.info(f"✅ Рассылка завершена. ✅{sent} | ❌{blocked}")
+            logger.error("Ошибка рассылки %s: %s", uid, e)
+    logger.info("✅ Рассылка завершена. ✅%s | ⏭️%s | ❌%s", sent, skipped, blocked)
 
 
 async def lunar_day_notification():
-    logging.info("🌙 Запуск рассылки о лунных сутках на завтра...")
-    tomorrow = datetime.now() + timedelta(days=1)
+    logger.info("🌙 Запуск рассылки о лунных сутках на завтра...")
+    tomorrow = datetime.now(MSK) + timedelta(days=1)
+    sent_date = tomorrow.date().isoformat()
     lunar = get_lunar_day(tomorrow)
     users = await get_all_users(DB_PATH)
-    sent = blocked = 0
+    sent = blocked = skipped = 0
 
     text = (
         f"🌙 <b>Лунный день на завтра ({tomorrow.strftime('%d.%m.%Y')})</b>\n\n"
@@ -617,14 +669,18 @@ async def lunar_day_notification():
 
     for uid in users:
         try:
+            if await was_broadcast_sent(DB_PATH, uid, "lunar_evening", sent_date):
+                skipped += 1
+                continue
             await bot.send_message(uid, text, parse_mode="HTML")
+            await mark_broadcast_sent(DB_PATH, uid, "lunar_evening", sent_date)
             sent += 1
             await asyncio.sleep(0.05)
         except (TelegramBadRequest, TelegramForbiddenError):
             blocked += 1
         except Exception as e:
-            logging.error(f"Ошибка отправки лунных суток {uid}: {e}")
-    logging.info(f"✅ Рассылка лунных суток завершена. ✅{sent} | ❌{blocked}")
+            logger.error("Ошибка отправки лунных суток %s: %s", uid, e)
+    logger.info("✅ Рассылка лунных суток завершена. ✅%s | ⏭️%s | ❌%s", sent, skipped, blocked)
 
 
 def setup_scheduler():
@@ -637,21 +693,165 @@ def setup_scheduler():
 
 
 # ================= ЗАПУСК =================
-async def main():
-    await init_db(DB_PATH)
-    scheduler = setup_scheduler()
+WEBHOOK_PATH = "/webhook"
+PORT = int(os.getenv("PORT", "8080"))
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
+IS_RENDER = bool(os.getenv("RENDER"))
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip() or None
+
+scheduler: AsyncIOScheduler | None = None
+
+
+async def ensure_telegram_connection(retries: int = 3) -> bool:
+    """Проверяет доступ к Telegram API до старта."""
+    for attempt in range(1, retries + 1):
+        try:
+            me = await bot.get_me()
+            logger.info("✅ Telegram: @%s (id=%s)", me.username, me.id)
+            return True
+        except TelegramNetworkError:
+            logger.warning(
+                "Попытка %s/%s: нет связи с api.telegram.org",
+                attempt, retries,
+            )
+            if attempt >= retries:
+                logger.error(
+                    "Не удалось подключиться к Telegram API.\n"
+                    "На Render прокси не нужен — уберите TELEGRAM_PROXY из переменных окружения.\n"
+                    "Локально: VPN Happ + TELEGRAM_PROXY=http://127.0.0.1:10809"
+                )
+                return False
+            await asyncio.sleep(5)
+    return False
+
+
+def _preload_assets_sync() -> None:
+    from asset_loader import ensure_all_tarot_assets, ensure_all_zodiac_assets
+    ensure_all_tarot_assets()
+    ensure_all_zodiac_assets()
+
+
+async def _preload_assets_background() -> None:
+    """Фоновая загрузка карт — не блокирует старт HTTP-сервера."""
+    logger.info("📦 Фоновая загрузка ассетов Таро/zodiac...")
     try:
-        logging.info("🤖 Бот запущен. Ожидание сообщений...")
-        await dp.start_polling(bot)
-    except KeyboardInterrupt:
-        logging.info("👋 Бот остановлен пользователем (Ctrl+C)")
-    finally:
+        await asyncio.to_thread(_preload_assets_sync)
+        logger.info("📦 Фоновая загрузка ассетов завершена")
+    except Exception as exc:
+        logger.exception("Ошибка фоновой загрузки ассетов: %s", exc)
+
+
+def _start_scheduler() -> AsyncIOScheduler:
+    global scheduler
+    scheduler = setup_scheduler()
+    return scheduler
+
+
+def _stop_scheduler() -> None:
+    global scheduler
+    if scheduler:
         scheduler.shutdown()
-        await bot.session.close()
+        scheduler = None
+
+
+async def _shutdown_bot() -> None:
+    _stop_scheduler()
+    await bot.session.close()
+    if not IS_RENDER:
+        release_single_instance()
+
+
+async def _on_webhook_startup(_app) -> None:
+    if not await ensure_telegram_connection():
+        raise RuntimeError("Telegram API недоступен")
+    base_url = RENDER_EXTERNAL_URL.rstrip("/")
+    webhook_url = f"{base_url}{WEBHOOK_PATH}"
+    await bot.set_webhook(
+        webhook_url,
+        secret_token=WEBHOOK_SECRET,
+        drop_pending_updates=True,
+    )
+    logger.info("🔗 Webhook установлен: %s", webhook_url)
+    _start_scheduler()
+    asyncio.create_task(_preload_assets_background())
+
+
+async def _on_webhook_shutdown(_app) -> None:
+    await bot.delete_webhook(drop_pending_updates=False)
+    await _shutdown_bot()
+
+
+async def _health_handler(_request):
+    from aiohttp import web
+    return web.Response(text="ok")
+
+
+async def _run_webhook_server() -> int:
+    from aiohttp import web
+    from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
+    app = web.Application()
+    app.router.add_get("/", _health_handler)
+    app.router.add_get("/health", _health_handler)
+
+    webhook_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+        secret_token=WEBHOOK_SECRET,
+    )
+    webhook_handler.register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+
+    app.on_startup.append(_on_webhook_startup)
+    app.on_cleanup.append(_on_webhook_shutdown)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    await site.start()
+    logger.info("🌐 HTTP-сервер слушает 0.0.0.0:%s (режим webhook)", PORT)
+
+    stop_event = asyncio.Event()
+    try:
+        await stop_event.wait()
+    except KeyboardInterrupt:
+        logger.info("👋 Остановка сервера...")
+    finally:
+        await runner.cleanup()
+    return 0
+
+
+async def _run_polling() -> int:
+    if not IS_RENDER:
+        acquire_single_instance()
+    try:
+        if not await ensure_telegram_connection():
+            return 1
+        _start_scheduler()
+        asyncio.create_task(_preload_assets_background())
+        logger.info("🤖 Бот запущен в режиме polling (локальная разработка)...")
+        await dp.start_polling(bot)
+        return 0
+    except KeyboardInterrupt:
+        logger.info("👋 Бот остановлен пользователем (Ctrl+C)")
+        return 0
+    finally:
+        await _shutdown_bot()
+
+
+async def main() -> int:
+    from paths import ensure_runtime_dirs
+
+    ensure_runtime_dirs()
+    await init_db(DB_PATH)
+
+    if RENDER_EXTERNAL_URL:
+        return await _run_webhook_server()
+    return await _run_polling()
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        raise SystemExit(asyncio.run(main()))
     except KeyboardInterrupt:
         print("\n🤖 Бот остановлен. До связи!")

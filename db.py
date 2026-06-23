@@ -1,13 +1,20 @@
 import aiosqlite
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 MSK = ZoneInfo("Europe/Moscow")
 
 
+def _msk_today_iso() -> str:
+    return datetime.now(MSK).date().isoformat()
+
+
+def _msk_yesterday_iso() -> str:
+    return (datetime.now(MSK).date() - timedelta(days=1)).isoformat()
+
+
 async def init_db(db_path: str):
     async with aiosqlite.connect(db_path) as db:
-        # 1. Таблица пользователей (полная схема)
         await db.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -22,7 +29,6 @@ async def init_db(db_path: str):
             )
         ''')
 
-        # 2. Таблица логов
         await db.execute('''
             CREATE TABLE IF NOT EXISTS usage_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -34,7 +40,6 @@ async def init_db(db_path: str):
             )
         ''')
 
-        # 3. Таблица астропрофилей
         await db.execute('''
             CREATE TABLE IF NOT EXISTS astro_profiles (
                 user_id INTEGER PRIMARY KEY,
@@ -48,7 +53,46 @@ async def init_db(db_path: str):
             )
         ''')
 
-        # Единый коммит в конце
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS broadcast_log (
+                user_id INTEGER NOT NULL,
+                broadcast_type TEXT NOT NULL,
+                sent_date TEXT NOT NULL,
+                sent_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, broadcast_type, sent_date)
+            )
+        ''')
+
+        for migration in (
+            "ALTER TABLE users ADD COLUMN streak_count INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN last_visit_date TEXT DEFAULT NULL",
+            "ALTER TABLE users ADD COLUMN bonus_claimed INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN started_at TEXT DEFAULT CURRENT_TIMESTAMP",
+        ):
+            try:
+                await db.execute(migration)
+            except Exception:
+                pass
+
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.commit()
+
+
+async def was_broadcast_sent(db_path: str, user_id: int, broadcast_type: str, sent_date: str) -> bool:
+    async with aiosqlite.connect(db_path) as db:
+        async with db.execute(
+            "SELECT 1 FROM broadcast_log WHERE user_id=? AND broadcast_type=? AND sent_date=?",
+            (user_id, broadcast_type, sent_date),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+async def mark_broadcast_sent(db_path: str, user_id: int, broadcast_type: str, sent_date: str):
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO broadcast_log (user_id, broadcast_type, sent_date, sent_at) VALUES (?, ?, ?, ?)",
+            (user_id, broadcast_type, sent_date, datetime.now(MSK).isoformat()),
+        )
         await db.commit()
 
 async def register_user(db_path: str, user_id: int, username: str | None, first_name: str):
@@ -92,10 +136,11 @@ async def get_stats(db_path: str):
                 SELECT u.username, u.first_name, u.zodiac, l.card_name, l.usage_type, l.zodiac_filter, l.used_at
                 FROM usage_log l
                 LEFT JOIN users u ON l.user_id = u.user_id
-                ORDER BY l.used_at ASC
+                ORDER BY l.used_at DESC
                 LIMIT 50
             ''')
-            return await cursor.fetchall()
+            rows = await cursor.fetchall()
+            return list(reversed(rows))
     except Exception as e:
         # 2. Выводим точную ошибку SQLite в консоль
         print(f"⚠️ Ошибка SQL в get_stats: {e}")
@@ -104,16 +149,14 @@ async def get_stats(db_path: str):
         # Это предотвратит краш бота, пока вы не обновите БД
         async with aiosqlite.connect(db_path) as db:
             cursor = await db.execute(
-                'SELECT user_id, card_name, usage_type, zodiac_filter, used_at FROM usage_log ORDER BY used_at ASC LIMIT 50')
+                'SELECT user_id, card_name, usage_type, zodiac_filter, used_at FROM usage_log ORDER BY used_at DESC LIMIT 50')
             rows = await cursor.fetchall()
-            # Форматируем под ожидаемый формат (заглушки для username/first_name/zodiac)
-            return [(None, None, None, *row[1:]) for row in rows]
+            return [(None, None, None, *row[1:]) for row in reversed(rows)]
 
 async def update_user_streak(db_path: str, user_id: int) -> dict:
     """Обновляет серию посещений. Возвращает статус для UI."""
-    from datetime import date, timedelta
-    today = date.today().isoformat()
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    today = _msk_today_iso()
+    yesterday = _msk_yesterday_iso()
 
     async with aiosqlite.connect(db_path) as db:
         async with db.execute('SELECT streak_count, last_visit_date, bonus_claimed FROM users WHERE user_id = ?', (user_id,)) as cur:
@@ -140,46 +183,6 @@ async def claim_bonus(db_path: str, user_id: int):
         await db.execute('UPDATE users SET bonus_claimed=1 WHERE user_id=?', (user_id,))
         await db.commit()
 
-async def init_db(db_path: str):
-    async with aiosqlite.connect(db_path) as db:
-        # 1. Создаём основные таблицы, если их нет
-        await db.execute('''CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            zodiac TEXT,
-            registered_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )''')
-        await db.execute('''CREATE TABLE IF NOT EXISTS usage_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            card_name TEXT,
-            usage_type TEXT,
-            zodiac_filter TEXT,
-            used_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )''')
-        await db.execute('''CREATE TABLE IF NOT EXISTS astro_profiles (
-            user_id INTEGER PRIMARY KEY,
-            birth_date TEXT,
-            birth_time TEXT,
-            birth_place TEXT,
-            birth_lat REAL,
-            birth_lon REAL,
-            current_place TEXT,
-            updated_at TEXT
-        )''')
-
-        # 2. 🔄 Миграция: добавляем поля для серии, если их ещё нет
-        try:
-            await db.execute("ALTER TABLE users ADD COLUMN streak_count INTEGER DEFAULT 0")
-            await db.execute("ALTER TABLE users ADD COLUMN last_visit_date TEXT DEFAULT NULL")
-            await db.execute("ALTER TABLE users ADD COLUMN bonus_claimed INTEGER DEFAULT 0")
-        except Exception:
-            pass  # Колонки уже существуют — пропускаем
-
-        await db.commit()
-
-# Добавьте эти функции в db.py:
 async def save_astro_profile(db_path: str, user_id: int, data: dict):
     async with aiosqlite.connect(db_path) as db:
         await db.execute('''INSERT OR REPLACE INTO astro_profiles 
@@ -209,11 +212,6 @@ async def delete_astro_profile(db_path: str, user_id: int):
         await db.execute('DELETE FROM astro_profiles WHERE user_id = ?', (user_id,))
         await db.commit()
 
-async def delete_astro_profile(db_path: str, user_id: int):
-    """Удаляет сохранённый астропрофиль пользователя"""
-    async with aiosqlite.connect(db_path) as db:
-        await db.execute('DELETE FROM astro_profiles WHERE user_id = ?', (user_id,))
-        await db.commit()
 
 async def get_user_streak(db_path: str, user_id: int) -> dict:
     """Получает текущий статус серии пользователя для команды /streak"""

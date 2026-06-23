@@ -1,6 +1,13 @@
 import random
 import hashlib
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+MSK = ZoneInfo("Europe/Moscow")
+
+
+def _today_msk() -> str:
+    return datetime.now(MSK).date().isoformat()
 
 TAROT_DB = [
     {"name": "Шут", "astro": "Уран", "up": "Сегодня идеальный день для новых начинаний и смелых решений. Вселенная поддерживает вашу спонтанность и детскую непосредственность — позвольте себе быть собой, не бойтесь показаться наивным. Доверьтесь потоку жизни, даже если путь кажется неочевидным. Это время свободы, когда правила отходят на второй план.", "rev": "Сейчас не лучшее время для необдуманных рисков. Вы можете действовать слишком импульсивно, не осознавая последствий. Остановитесь и подумайте: это приключение или безрассудство? Возможно, стоит отложить важные решения на несколько дней и вернуться к ним со свежей головой."},
@@ -291,7 +298,7 @@ ZODIAC_ASTRO = {
 }
 
 def get_card(user_id: int | None = None, zodiac: str | None = None, force_date: str | None = None, context: str = "general") -> dict:
-    today = force_date or date.today().isoformat()
+    today = force_date or _today_msk()
     pool = TAROT_DB
     if zodiac:
         zodiac = zodiac.lower().strip()
@@ -308,10 +315,10 @@ def get_card(user_id: int | None = None, zodiac: str | None = None, force_date: 
 def get_random_card() -> dict:
     card = random.choice(TAROT_DB)
     is_reversed = random.random() < 0.3
-    return {"name": card["name"], "position": "перевернутая" if is_reversed else "прямая", "meaning": card["rev"] if is_reversed else card["up"], "astro": card["astro"], "date": date.today().isoformat()}
+    return {"name": card["name"], "position": "перевернутая" if is_reversed else "прямая", "meaning": card["rev"] if is_reversed else card["up"], "astro": card["astro"], "date": _today_msk()}
 
 def get_daily_astrology(force_date: str = None) -> dict:
-    today = force_date or date.today().isoformat()
+    today = force_date or _today_msk()
     seed_val = int(hashlib.sha256(f"astro_{today}".encode()).hexdigest(), 16)
     rng = random.Random(seed_val)
     signs = ["Овен", "Телец", "Близнецы", "Рак", "Лев", "Дева", "Весы", "Скорпион", "Стрелец", "Козерог", "Водолей", "Рыбы"]

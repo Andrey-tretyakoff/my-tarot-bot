@@ -1,11 +1,14 @@
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+MSK = ZoneInfo("Europe/Moscow")
 
 
 def get_lunar_day(date: datetime = None) -> dict:
     if date is None:
-        date = datetime.now()
-    if date.tzinfo is None:
-        date = date.replace(tzinfo=datetime.now(timezone.utc).astimezone().tzinfo)
+        date = datetime.now(MSK)
+    elif date.tzinfo is None:
+        date = date.replace(tzinfo=MSK)
 
     known_new_moon = datetime(2024, 1, 11, 11, 57, tzinfo=timezone.utc)
     lunar_month = 29.53058867
@@ -62,7 +65,10 @@ def get_lunar_day(date: datetime = None) -> dict:
 
 
 def get_weekly_energy_forecast(start_date: datetime = None) -> list[dict]:
-    if start_date is None: start_date = datetime.now()
+    if start_date is None:
+        start_date = datetime.now(MSK)
+    elif start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=MSK)
     return [
         {
             "date": (start_date + timedelta(days=i)).strftime("%d.%m"),

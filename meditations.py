@@ -1,5 +1,8 @@
 # meditations.py
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+MSK = ZoneInfo("Europe/Moscow")
 
 # 🧘 База медитаций с тегами (tags)
 # Теги: 'waxing' (растущая), 'waning' (убывающая), 'full' (полнолуние), 'new' (новолуние), 'magic' (магический день), 'all' (универсальная)
@@ -121,7 +124,7 @@ MEDITATIONS_DB = [
 def get_meditation_of_day(date: datetime = None) -> dict:
     """Возвращает медитацию, подходящую под текущую Луну"""
     if date is None:
-        date = datetime.now()
+        date = datetime.now(MSK)
 
     # 1. Пытаемся получить данные о Луне
     try:

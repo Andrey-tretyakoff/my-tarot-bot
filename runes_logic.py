@@ -1,6 +1,9 @@
 # runes_logic.py
 import random
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+MSK = ZoneInfo("Europe/Moscow")
 
 RUNES_DB = [
     {"sym": "ᚠ", "ru": "Феху", "mean": "Богатство, движение", "adv": "Действуй смело, энергия на подъёме."},
@@ -33,7 +36,7 @@ RUNES_DB = [
 def get_weekly_rune_spread(zodiac: str, birth_date: str, gender: str):
     """Возвращает готовый HTML-текст расклада и список названий рун для картинки"""
     # Фиксируем сид на неделю, чтобы расклад не менялся до понедельника
-    current_week = datetime.now().isocalendar()[1]
+    current_week = datetime.now(MSK).isocalendar()[1]
     seed_str = f"{birth_date}_{current_week}_{zodiac}"
     seed = sum(ord(c) for c in seed_str)
     random.seed(seed)
